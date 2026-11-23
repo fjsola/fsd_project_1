@@ -156,4 +156,51 @@ with tab2:
   if df_tx.empty:
     st.info("💡 해당 카드의 거래 내역이 없습니다.")
   else:
-    st.dataframe(df_tx, use_container_width=True)
+    st.dataframe(df_tx, use_container_width=True
+
+import streamlit as st
+
+# Aiven MySQL 연결 설정 불러오기
+conn = st.connection("mysql", type="sql")
+
+# 앱이 켜질 때 테이블이 없으면 자동으로 생성
+with conn.session as s:
+    s.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(50) NOT NULL,
+            phone VARCHAR(50) NOT NULL,
+            signup_date DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    s.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            card_id VARCHAR(20) PRIMARY KEY,
+            user_id INT,
+            limit_amount INT DEFAULT 5000000,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+    """)
+    s.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            tx_id INT AUTO_INCREMENT PRIMARY KEY,
+            card_id VARCHAR(20),
+            tx_time DATETIME NOT NULL,
+            amount INT NOT NULL,
+            merchant_country VARCHAR(10) NOT NULL,
+            ip_address VARCHAR(50) NOT NULL,
+            status VARCHAR(20) DEFAULT 'NORMAL',
+            FOREIGN KEY (card_id) REFERENCES cards(card_id)
+        );
+    """)
+    s.execute("""
+        CREATE TABLE IF NOT EXISTS alert_logs (
+            alert_id INT AUTO_INCREMENT PRIMARY KEY,
+            tx_id INT,
+            risk_score INT,
+            detect_reason VARCHAR(255),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    s.commit()
+                 
