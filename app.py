@@ -2,15 +2,24 @@ import pandas as pd
 import pymysql
 import streamlit as st
 
-# 페이지 설정 (와이드 모드 적용으로 화면을 더 넓고 예쁘게 씀)
+# 페이지 설정
 st.set_page_config(
     page_title="스마트 보안 FDS 관제 시스템", page_icon="🚨", layout="wide"
 )
 
-# Aiven MySQL 연결 설정 불러오기 (Streamlit Native Connection)
-conn = st.connection("mysql", type="sql")
+# Streamlit secrets에서 정보 가져와서 SQLAlchemy + PyMySQL 연결 생성
+db_host = st.secrets["mysql"]["host"]
+db_port = st.secrets["mysql"]["port"]
+db_user = st.secrets["mysql"]["user"]
+db_password = st.secrets["mysql"]["password"]
+db_name = st.secrets["mysql"]["database"]
 
-# 앱이 켜질 때 Aiven DB에 테이블이 없으면 자동으로 생성
+# PyMySQL을 활용한 SQLAlchemy 커넥션 스트링 (mysql+pymysql 사용)
+DATABASE_URL = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
+
+conn = st.connection("mysql", type="sql", url=DATABASE_URL)
+
+# 앱이 켜질 때 Aiven DB에 테이블이 없으면 자동 생성
 with conn.session as s:
   s.execute("""
         CREATE TABLE IF NOT EXISTS users (
