@@ -20,7 +20,7 @@ DATABASE_URL = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db
 
 conn = st.connection("mysql", type="sql", url=DATABASE_URL)
 
-# 앱이 켜질 때 Aiven DB에 테이블이 없으면 자동 생성
+# 앱이 켜질 때 Aiven DB에 테이블이 없으면 자동 생성 및 기본 데이터 삽입
 with conn.session as s:
   s.execute(
       text(
@@ -75,8 +75,31 @@ with conn.session as s:
     """
       )
   )
-  s.commit()
 
+  # ★ 외래 키 에러 방지를 위한 기본 더미 사용자 및 카드 데이터 자동 삽입
+  s.execute(
+      text(
+          """
+        INSERT INTO users (user_id, name, phone) 
+        VALUES (1, '홍길동', '010-1234-5678')
+        ON DUPLICATE KEY UPDATE name=name;
+    """
+      )
+  )
+  s.execute(
+      text(
+          """
+        INSERT INTO cards (card_id, user_id, limit_amount) 
+        VALUES 
+            ('4000-1234-5678-0001', 1, 5000000),
+            ('4000-1234-5678-0002', 1, 5000000),
+            ('4000-1234-5678-0003', 1, 5000000)
+        ON DUPLICATE KEY UPDATE limit_amount=limit_amount;
+    """
+      )
+  )
+
+  s.commit()
 
 # PyMySQL을 사용하는 기존 방식의 DB 연결 함수 (사이드바 결제 요청 등에서 활용)
 def get_connection():
