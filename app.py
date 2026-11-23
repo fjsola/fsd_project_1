@@ -1,6 +1,7 @@
 import pandas as pd
 import pymysql
 import streamlit as st
+from sqlalchemy import text
 
 # 페이지 설정
 st.set_page_config(
@@ -21,23 +22,33 @@ conn = st.connection("mysql", type="sql", url=DATABASE_URL)
 
 # 앱이 켜질 때 Aiven DB에 테이블이 없으면 자동 생성
 with conn.session as s:
-  s.execute("""
+  s.execute(
+      text(
+          """
         CREATE TABLE IF NOT EXISTS users (
             user_id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(50) NOT NULL,
             phone VARCHAR(50) NOT NULL,
             signup_date DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    """)
-  s.execute("""
+    """
+      )
+  )
+  s.execute(
+      text(
+          """
         CREATE TABLE IF NOT EXISTS cards (
             card_id VARCHAR(20) PRIMARY KEY,
             user_id INT,
             limit_amount INT DEFAULT 5000000,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         );
-    """)
-  s.execute("""
+    """
+      )
+  )
+  s.execute(
+      text(
+          """
         CREATE TABLE IF NOT EXISTS transactions (
             tx_id INT AUTO_INCREMENT PRIMARY KEY,
             card_id VARCHAR(20),
@@ -48,8 +59,12 @@ with conn.session as s:
             status VARCHAR(20) DEFAULT 'NORMAL',
             FOREIGN KEY (card_id) REFERENCES cards(card_id)
         );
-    """)
-  s.execute("""
+    """
+      )
+  )
+  s.execute(
+      text(
+          """
         CREATE TABLE IF NOT EXISTS alert_logs (
             alert_id INT AUTO_INCREMENT PRIMARY KEY,
             tx_id INT,
@@ -57,7 +72,9 @@ with conn.session as s:
             detect_reason VARCHAR(255),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-    """)
+    """
+      )
+  )
   s.commit()
 
 
