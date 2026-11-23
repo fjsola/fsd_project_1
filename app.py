@@ -11,12 +11,12 @@ st.set_page_config(
 # DB 연결 함수
 def get_connection():
   return pymysql.connect(
-      host="localhost",
-      user="root",
-      password="mysql1234",  # 본인 MySQL 비밀번호로 수정해주세요!
-      database="fds_system",
+      host=st.secrets["mysql"]["host"],
+      port=st.secrets["mysql"]["port"],
+      user=st.secrets["mysql"]["user"],
+      password=st.secrets["mysql"]["password"],
+      database=st.secrets["mysql"]["database"],
       charset="utf8mb4",
-      cursorclass=pymysql.cursors.DictCursor,
   )
 
 
