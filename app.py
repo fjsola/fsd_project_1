@@ -29,6 +29,7 @@ conn = st.connection("mysql", type="sql", url=DATABASE_URL)
 
 # 앱 실행 시 테이블 자동 생성 및 더미 데이터 삽입
 with conn.session as s:
+    # 1. 사용자 정보 테이블
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -37,6 +38,17 @@ with conn.session as s:
             signup_date DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """))
+    
+    # 2. 가맹점 업종 마스터 테이블 (추가됨 ✨)
+    s.execute(text("""
+        CREATE TABLE IF NOT EXISTS merchant_categories (
+            category_id INT AUTO_INCREMENT PRIMARY KEY,
+            category_name VARCHAR(50) NOT NULL,
+            risk_weight INT DEFAULT 10
+        );
+    """))
+
+    # 3. 카드 정보 테이블 (users와 1:N 관계)
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS cards (
             card_id VARCHAR(20) PRIMARY KEY,
@@ -45,32 +57,65 @@ with conn.session as s:
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         );
     """))
+
+    # 4. 거래 내역 테이블 (cards와 1:N 관계)
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS transactions (
             tx_id INT AUTO_INCREMENT PRIMARY KEY,
             card_id VARCHAR(20),
             tx_time DATETIME NOT NULL,
             amount INT NOT NULL,
-            merchant_country VARCHAR(10) NOT NULL,
+            merchant_category VARCHAR(50) NOT NULL,
+            foreign_transaction INT DEFAULT 0,
+            location_mismatch INT DEFAULT 0,
+            device_trust_score INT DEFAULT 80,
+            velocity_last_24h INT DEFAULT 1,
             ip_address VARCHAR(50) NOT NULL,
             status VARCHAR(20) DEFAULT 'NORMAL',
             FOREIGN KEY (card_id) REFERENCES cards(card_id)
         );
     """))
+
+    # 5. FDS 탐지 규칙 정의 테이블 (추가됨 ✨)
+    s.execute(text("""
+        CREATE TABLE IF NOT EXISTS fraud_rules (
+            rule_id INT AUTO_INCREMENT PRIMARY KEY,
+            rule_name VARCHAR(100) NOT NULL,
+            threshold_value INT NOT NULL,
+            score_weight INT NOT NULL
+        );
+    """))
+
+    # 6. 보안 경보 로그 테이블 (transactions와 1:N 관계)
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS alert_logs (
             alert_id INT AUTO_INCREMENT PRIMARY KEY,
             tx_id INT,
             risk_score INT,
             detect_reason VARCHAR(255),
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tx_id) REFERENCES transactions(tx_id)
         );
     """))
+
+    # --- 초기 기본 마스터 및 더미 데이터 자동 삽입 ---
     s.execute(text("""
         INSERT INTO users (user_id, name, phone) 
         VALUES (1, '홍길동', '010-1234-5678')
         ON DUPLICATE KEY UPDATE name=name;
     """))
+
+    s.execute(text("""
+        INSERT INTO merchant_categories (category_id, category_name, risk_weight) 
+        VALUES 
+            (1, 'Electronics', 15),
+            (2, 'Travel', 20),
+            (3, 'Grocery', 5),
+            (4, 'Food', 5),
+            (5, 'Clothing', 10)
+        ON DUPLICATE KEY UPDATE category_name=category_name;
+    """))
+
     s.execute(text("""
         INSERT INTO cards (card_id, user_id, limit_amount) 
         VALUES 
@@ -79,6 +124,17 @@ with conn.session as s:
             ('4000-1234-5678-0003', 1, 5000000)
         ON DUPLICATE KEY UPDATE limit_amount=limit_amount;
     """))
+
+    s.execute(text("""
+        INSERT INTO fraud_rules (rule_id, rule_name, threshold_value, score_weight) 
+        VALUES 
+            (1, '고액 결제 탐지', 2000000, 40),
+            (2, '초고액 결제 탐지', 5000000, 30),
+            (3, '단시간 반복 결제', 5, 30),
+            (4, '해외 결제 위험', 1, 20)
+        ON DUPLICATE KEY UPDATE rule_name=rule_name;
+    """))
+
     s.commit()
 
 def get_connection():
