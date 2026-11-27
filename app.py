@@ -39,7 +39,7 @@ with conn.session as s:
         );
     """))
     
-    # 2. 가맹점 업종 마스터 테이블 (추가됨 ✨)
+    # 2. 가맹점 업종 마스터 테이블
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS merchant_categories (
             category_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -76,7 +76,7 @@ with conn.session as s:
         );
     """))
 
-    # 5. FDS 탐지 규칙 정의 테이블 (추가됨 ✨)
+    # 5. FDS 탐지 규칙 정의 테이블
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS fraud_rules (
             rule_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -86,7 +86,19 @@ with conn.session as s:
         );
     """))
 
-    # 6. 보안 경보 로그 테이블 (transactions와 1:N 관계)
+    # 6. 사용자별 맞춤형 탐지 규칙 매핑 테이블 (N:M 관계를 해소하는 교차 테이블 ✨)
+    s.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_rules (
+            user_id INT,
+            rule_id INT,
+            custom_threshold INT NOT NULL,
+            PRIMARY KEY (user_id, rule_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (rule_id) REFERENCES fraud_rules(rule_id)
+        );
+    """))
+
+    # 7. 보안 경보 로그 테이블 (transactions와 1:N 관계)
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS alert_logs (
             alert_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -135,8 +147,16 @@ with conn.session as s:
         ON DUPLICATE KEY UPDATE rule_name=rule_name;
     """))
 
-    s.commit()
+    # N:M 교차 테이블 초기 매핑 데이터 삽입
+    s.execute(text("""
+        INSERT INTO user_rules (user_id, rule_id, custom_threshold) 
+        VALUES 
+            (1, 1, 2000000),
+            (1, 3, 5)
+        ON DUPLICATE KEY UPDATE custom_threshold=custom_threshold;
+    """))
 
+    s.commit()
 def get_connection():
     return pymysql.connect(
         host=db_host,
