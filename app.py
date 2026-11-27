@@ -533,10 +533,10 @@ GROUP BY t.card_id
 ORDER BY avg_risk DESC
 """, get_connection())
 
-s# 1. 평균 위험도 소수점 첫째 자리 반올림
+# 1. 평균 위험도 소수점 첫째 자리 반올림 (주석 기호 # 포함)
 df_risk["avg_risk"] = df_risk["avg_risk"].round(1)
 
-# 2. 기존 st.dataframe(...)을 지우고 이 코드로 교체
+# 2. 데이터프레임 출력
 st.dataframe(
     df_risk.rename(
         columns={
@@ -546,6 +546,8 @@ st.dataframe(
     ),
     width="stretch"
 )
+
+
 # 내 카드 맞춤형 조회 필터
 st.subheader("🔍 내 카드 맞춤형 조회 필터")
 filter_option = st.selectbox(
