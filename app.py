@@ -140,163 +140,152 @@ except:
       "4000-1234-5678-0003",
   ]
 
-# --- [사이드바] 결제 시뮬레이터 입력 폼 ---
-st.sidebar.header("💳 실시간 결제 요청 시뮬레이터")
-card_id = st.sidebar.selectbox("사용할 카드 선택", card_list)
-
-amount = st.sidebar.number_input(
-    "결제 금액 (원)", min_value=1000, max_value=10000000, value=50000, step=1000
-)
-country = st.sidebar.selectbox("결제 국가", ["KR", "US", "CN", "VN"])
-ip_address = st.sidebar.text_input("접속 IP", "123.142.50.11")
-
 if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
-  conn_exec = get_connection()
-  try:
-    with conn_exec.cursor() as cursor:
-      # 1. 거래 내역 삽입
-      cursor.execute(
-          "INSERT INTO transactions (card_id, tx_time, amount, merchant_country,"
-          " ip_address) VALUES (%s, NOW(), %s, %s, %s)",
-          (card_id, amount, country, ip_address),
-      )
-      conn_exec.commit()
 
-      tx_id = cursor.lastrowid
+    conn_exec = get_connection()
 
-risk_score = 0
-reasons = []
+    try:
 
+        with conn_exec.cursor() as cursor:
 
-#결재 승인 로직 RISK SCORE
-# 1. 고액 결제
-if amount > 2000000:
-    risk_score += 40
-    reasons.append("고액결제")
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                (
+                    card_id,
+                    tx_time,
+                    amount,
+                    merchant_country,
+                    ip_address
+                )
+                VALUES
+                (
+                    %s,
+                    NOW(),
+                    %s,
+                    %s,
+                    %s
+                )
+                """,
+                (
+                    card_id,
+                    amount,
+                    country,
+                    ip_address
+                )
+            )
 
-# 2. 해외 결제
-if country != "KR":
-    risk_score += 20
-    reasons.append("해외결제")
+            conn_exec.commit()
 
-# 3. 최근 5분 내 같은 카드 다중 결제
+            tx_id = cursor.lastrowid
 
-cursor.execute("""
-SELECT COUNT(*) 
-FROM transactions
-WHERE card_id=%s
-AND tx_time >= NOW() - INTERVAL 5 MINUTE
-""", (card_id,))
+            risk_score = 0
+            reasons = []
 
-recent_count = cursor.fetchone()[0]
+            # 고액 결제
+            if amount > 2000000:
+                risk_score += 40
+                reasons.append("고액결제")
 
-if recent_count >= 3:
-    risk_score += 30
-    reasons.append("5분내 반복결제")
+            # 해외 결제
+            if country != "KR":
+                risk_score += 20
+                reasons.append("해외결제")
 
-# 4. 심야 거래
-from datetime import datetime
+            # 최근 5분 내 반복 결제
+            cursor.execute("""
+            SELECT COUNT(*)
+            FROM transactions
+            WHERE card_id=%s
+            AND tx_time >= NOW() - INTERVAL 5 MINUTE
+            """, (card_id,))
 
-hour = datetime.now().hour
+            recent_count = cursor.fetchone()[0]
 
-if 1 <= hour <= 5:
-    risk_score += 15
-    reasons.append("심야거래")
+            if recent_count >= 3:
+                risk_score += 30
+                reasons.append("5분내 반복결제")
 
-# 5. 마지막 거래와 IP 비교
+            # 심야 거래
+            hour = datetime.now().hour
 
-cursor.execute("""
-SELECT ip_address
-FROM transactions
-WHERE card_id=%s
-ORDER BY tx_time DESC
-LIMIT 2
-""", (card_id,))
+            if 1 <= hour <= 5:
+                risk_score += 15
+                reasons.append("심야거래")
 
-ips = cursor.fetchall()
+            # 상태 결정
+            if risk_score >= 60:
+                status = "BLOCKED"
 
-if len(ips) >= 2:
-    last_ip = ips[1][0]
+            elif risk_score >= 30:
+                status = "REVIEW"
 
-    if last_ip != ip_address:
-        risk_score += 20
-        reasons.append("IP변경")
+            else:
+                status = "NORMAL"
 
+            cursor.execute(
+                """
+                UPDATE transactions
+                SET status=%s
+                WHERE tx_id=%s
+                """,
+                (
+                    status,
+                    tx_id
+                )
+            )
 
-# 상태 설정 
-if risk_score >= 60:
+            conn_exec.commit()
 
-    status = "BLOCKED"
+            if risk_score >= 30:
 
-elif risk_score >= 30:
+                cursor.execute(
+                    """
+                    INSERT INTO alert_logs
+                    (
+                        tx_id,
+                        risk_score,
+                        detect_reason
+                    )
+                    VALUES
+                    (
+                        %s,
+                        %s,
+                        %s
+                    )
+                    """,
+                    (
+                        tx_id,
+                        risk_score,
+                        ", ".join(reasons)
+                    )
+                )
 
-    status = "REVIEW"
+                conn_exec.commit()
 
-else:
+            if status == "BLOCKED":
 
-    status = "NORMAL"
+                st.sidebar.error(
+                    f"⚠️ 차단됨 (위험도: {risk_score})"
+                )
 
-# 거래 상태 업데이트 
-cursor.execute("""
-UPDATE transactions
-SET status=%s
-WHERE tx_id=%s
-""",
-(status, tx_id)
-)
+            elif status == "REVIEW":
 
-conn_exec.commit()
+                st.sidebar.warning(
+                    f"🔎 추가 검토 필요 (위험도: {risk_score})"
+                )
 
-# 경보 로그 저장
-if risk_score >= 30:
+            else:
 
-    cursor.execute("""
-    INSERT INTO alert_logs
-    (
-        tx_id,
-        risk_score,
-        detect_reason
-    )
-    VALUES
-    (
-        %s,
-        %s,
-        %s
-    )
-    """,
-    (
-        tx_id,
-        risk_score,
-        ", ".join(reasons)
-    )
-    )
+                st.sidebar.success(
+                    f"✅ 정상 승인 (위험도: {risk_score})"
+                )
 
-    conn_exec.commit()
+    finally:
 
-# 사용자 메세지 
-if status == "BLOCKED":
+        conn_exec.close()
 
-    st.sidebar.error(
-        f"⚠️ 차단됨 (위험도: {risk_score})"
-    )
-
-elif status == "REVIEW":
-
-    st.sidebar.warning(
-        f"🔎 추가 검토 필요 (위험도: {risk_score})"
-    )
-
-else:
-
-    st.sidebar.success(
-        f"✅ 정상 승인 (위험도: {risk_score})"
-    )
-
-
-
-
-  # 화면 새로고침 효과
-  st.rerun()
+    st.rerun()
 
 
 # --- [메인 화면] 상단 요약 지표 카드 (st.metric 활용) ---
