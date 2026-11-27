@@ -1,6 +1,7 @@
 import pandas as pd
 import pymysql
 import streamlit as st
+import plotly.express as px
 
 from sqlalchemy import text
 from datetime import datetime
@@ -461,28 +462,62 @@ with col_chart1:
 
     st.subheader("🌎 국가별 거래 현황")
 
-    st.bar_chart(
-        df_country.set_index(
-            "merchant_country"
-        )
+    fig_country = px.bar(
+        df_country,
+        x="merchant_country",
+        y="cnt",
+        color="merchant_country",
+        text_auto=True
+    )
+
+    fig_country.update_layout(
+        showlegend=False,
+        height=350
+    )
+
+    st.plotly_chart(
+        fig_country,
+        width="stretch"
     )
 
 with col_chart2:
 
     st.subheader("🛡️ 거래 상태 분석")
 
-    st.bar_chart(
-        df_status.set_index(
-            "status"
-        )
+    fig_status = px.bar(
+        df_status,
+        x="status",
+        y="cnt",
+        color="status",
+        text_auto=True
+    )
+
+    fig_status.update_layout(
+        showlegend=False,
+        height=350
+    )
+
+    st.plotly_chart(
+        fig_status,
+        width="stretch"
     )
 
 st.subheader("⏰ 시간대별 거래 현황")
 
-st.bar_chart(
-    df_hour.set_index(
-        "hour"
-    )
+fig_hour = px.line(
+    df_hour,
+    x="hour",
+    y="cnt",
+    markers=True
+)
+
+fig_hour.update_layout(
+    height=400
+)
+
+st.plotly_chart(
+    fig_hour,
+    width="stretch"
 )
 
 # 내 카드 맞춤형 조회 필터
