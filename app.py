@@ -161,7 +161,7 @@ st.markdown(
 
 section[data-testid="stSidebar"] {
 
-    background-color: #1e293b;
+    background-color: #F8FAFC;
 
 }
 
@@ -169,7 +169,7 @@ section[data-testid="stSidebar"] {
 
 section[data-testid="stSidebar"] * {
 
-    color: black;
+    color: white;
 
 }
 
