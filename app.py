@@ -116,9 +116,67 @@ def get_connection():
     )
 
 # 제목 및 스타일 타이틀
-st.title("🚨 스마트 보안 FDS (이상 거래 탐지) 관제 시스템")
-st.markdown("실시간 결제 시뮬레이션 및 내 카드 보안 모니터링 대시보드입니다.")
-st.markdown("---")
+st.markdown("""
+# 🚨 Smart FDS Security Center
+
+### 실시간 이상거래 탐지 및 카드 보안 관제 시스템
+
+---
+""")
+st.markdown(
+    """
+<style>
+
+/* 전체 배경 */
+
+.stApp {
+    background-color: #f7f9fc;
+}
+
+/* KPI 카드 */
+
+[data-testid="metric-container"] {
+
+    background: white;
+
+    border: 1px solid #e5e7eb;
+
+    padding: 20px;
+
+    border-radius: 15px;
+
+    box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+}
+
+/* 데이터프레임 */
+
+[data-testid="stDataFrame"] {
+
+    background: white;
+
+    border-radius: 15px;
+}
+
+/* 사이드바 */
+
+section[data-testid="stSidebar"] {
+
+    background-color: #1e293b;
+
+}
+
+/* 사이드바 글씨 */
+
+section[data-testid="stSidebar"] * {
+
+    color: white;
+
+}
+
+</style>
+    """,
+    unsafe_allow_html=True
+)
 
 # 데이터베이스에서 등록된 카드 목록 동적 불러오기 (테이블이 비어있을 경우 기본값 활용)
 try:
@@ -141,7 +199,17 @@ except:
   ]
 # --- [사이드바] 결제 시뮬레이터 입력 폼 ---
 
-st.sidebar.header("💳 실시간 결제 요청 시뮬레이터")
+st.sidebar.markdown("""
+
+# 💳 결제 시뮬레이터
+
+카드 결제를 생성하여
+
+실시간 FDS 탐지 기능을 테스트합니다.
+
+---
+
+""")
 
 card_id = st.sidebar.selectbox(
     "사용할 카드 선택",
@@ -218,7 +286,7 @@ if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
                 risk_score += 20
                 reasons.append("해외결제")
                 
-                       # 최근 5분 내 반복 결제
+            # 최근 5분 내 반복 결제
             cursor.execute("""
             SELECT COUNT(*) AS cnt
             FROM transactions
@@ -348,7 +416,14 @@ col3.metric(label="🚨 보안 경보(Alert)", value=f"{alert_count:,} 건")
 
 st.markdown("---")
 
-# 국가별 거래 건수 
+if blocked_tx_count > 0:
+
+    st.warning(
+        f"⚠️ 위험 거래 {blocked_tx_count}건 탐지"
+    )
+
+# 차트 데이터 조회
+
 chart_conn = get_connection()
 
 df_country = pd.read_sql("""
@@ -359,15 +434,6 @@ FROM transactions
 GROUP BY merchant_country
 """, chart_conn)
 
-st.subheader("🌎 국가별 거래 현황")
-
-st.bar_chart(
-    df_country.set_index(
-        "merchant_country"
-    )
-)
-
-# 상태별 거래 건수 
 df_status = pd.read_sql("""
 SELECT
 status,
@@ -375,8 +441,6 @@ COUNT(*) cnt
 FROM transactions
 GROUP BY status
 """, chart_conn)
-
-st.subheader("🛡️ 거래 상태 분석")
 
 df_hour = pd.read_sql("""
 SELECT
@@ -387,20 +451,39 @@ GROUP BY HOUR(tx_time)
 ORDER BY hour
 """, chart_conn)
 
+chart_conn.close()
+
+# 차트 출력
+
+col_chart1, col_chart2 = st.columns(2)
+
+with col_chart1:
+
+    st.subheader("🌎 국가별 거래 현황")
+
+    st.bar_chart(
+        df_country.set_index(
+            "merchant_country"
+        )
+    )
+
+with col_chart2:
+
+    st.subheader("🛡️ 거래 상태 분석")
+
+    st.bar_chart(
+        df_status.set_index(
+            "status"
+        )
+    )
+
 st.subheader("⏰ 시간대별 거래 현황")
 
 st.bar_chart(
-    df_hour.set_index("hour")
-)
-
-
-st.bar_chart(
-    df_status.set_index(
-        "status"
+    df_hour.set_index(
+        "hour"
     )
 )
-
-chart_conn.close()
 
 # 내 카드 맞춤형 조회 필터
 st.subheader("🔍 내 카드 맞춤형 조회 필터")
@@ -458,30 +541,38 @@ def highlight_status(row):
 tab1, tab2 = st.tabs(["📊 실시간 보안 경보 로그", "📋 내 카드 거래 내역"])
 
 with tab1:
-  st.markdown("### 🚨 최근 보안 경보 현황")
 
-  if df_alerts.empty:
-    st.info("💡 선택한 카드에 발생한 보안 경보가 없습니다. 안전합니다!")
-  else:
-    st.dataframe(
-      df_alerts,
-      width="stretch"
-)
+    st.markdown("### 🚨 최근 보안 경보 현황")
+
+    if df_alerts.empty:
+
+        st.info(
+            "💡 선택한 카드에 발생한 보안 경보가 없습니다. 안전합니다!"
+        )
+
+    else:
+
+        st.dataframe(
+            df_alerts,
+            width="stretch"
+        )
 
 with tab2:
 
-  st.markdown("### 💳 최근 거래 내역")
+    st.markdown("### 💳 최근 거래 내역")
 
-  if df_tx.empty:
+    if df_tx.empty:
 
-    st.info("💡 해당 카드의 거래 내역이 없습니다.")
+        st.info(
+            "💡 해당 카드의 거래 내역이 없습니다."
+        )
 
-  else:
+    else:
 
-    st.dataframe(
-      df_tx.style.apply(
-        highlight_status,
-        axis=1
-    ),
-    width="stretch"
-)
+        st.dataframe(
+            df_tx.style.apply(
+                highlight_status,
+                axis=1
+            ),
+            width="stretch"
+        )
