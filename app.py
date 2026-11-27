@@ -1,7 +1,9 @@
 import pandas as pd
 import pymysql
 import streamlit as st
+
 from sqlalchemy import text
+from datetime import datetime
 
 # 페이지 설정
 st.set_page_config(
@@ -160,18 +162,139 @@ if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
       )
       conn_exec.commit()
 
-      # 2. 간단한 실시간 룰 검증 (200만원 초과 또는 해외 결제 시 차단)
-      if amount > 2000000 or country != "KR":
-        cursor.execute(
-            "UPDATE transactions SET status = 'BLOCKED' WHERE tx_id ="
-            " LAST_INSERT_ID()"
-        )
-        conn_exec.commit()
-        st.sidebar.error("⚠️ [이상 거래 감지] 위험 거래로 차단되었습니다!")
-      else:
-        st.sidebar.success("✅ 정상 승인되었습니다.")
-  finally:
-    conn_exec.close()
+      tx_id = cursor.lastrowid
+
+risk_score = 0
+reasons = []
+
+
+#결재 승인 로직 RISK SCORE
+# 1. 고액 결제
+if amount > 2000000:
+    risk_score += 40
+    reasons.append("고액결제")
+
+# 2. 해외 결제
+if country != "KR":
+    risk_score += 20
+    reasons.append("해외결제")
+
+# 3. 최근 5분 내 같은 카드 다중 결제
+
+cursor.execute("""
+SELECT COUNT(*) 
+FROM transactions
+WHERE card_id=%s
+AND tx_time >= NOW() - INTERVAL 5 MINUTE
+""", (card_id,))
+
+recent_count = cursor.fetchone()[0]
+
+if recent_count >= 3:
+    risk_score += 30
+    reasons.append("5분내 반복결제")
+
+# 4. 심야 거래
+from datetime import datetime
+
+hour = datetime.now().hour
+
+if 1 <= hour <= 5:
+    risk_score += 15
+    reasons.append("심야거래")
+
+# 5. 마지막 거래와 IP 비교
+
+cursor.execute("""
+SELECT ip_address
+FROM transactions
+WHERE card_id=%s
+ORDER BY tx_time DESC
+LIMIT 2
+""", (card_id,))
+
+ips = cursor.fetchall()
+
+if len(ips) >= 2:
+    last_ip = ips[1][0]
+
+    if last_ip != ip_address:
+        risk_score += 20
+        reasons.append("IP변경")
+
+
+# 상태 설정 
+if risk_score >= 60:
+
+    status = "BLOCKED"
+
+elif risk_score >= 30:
+
+    status = "REVIEW"
+
+else:
+
+    status = "NORMAL"
+
+# 거래 상태 업데이트 
+cursor.execute("""
+UPDATE transactions
+SET status=%s
+WHERE tx_id=%s
+""",
+(status, tx_id)
+)
+
+conn_exec.commit()
+
+# 경보 로그 저장
+if risk_score >= 30:
+
+    cursor.execute("""
+    INSERT INTO alert_logs
+    (
+        tx_id,
+        risk_score,
+        detect_reason
+    )
+    VALUES
+    (
+        %s,
+        %s,
+        %s
+    )
+    """,
+    (
+        tx_id,
+        risk_score,
+        ", ".join(reasons)
+    )
+    )
+
+    conn_exec.commit()
+
+# 사용자 메세지 
+if status == "BLOCKED":
+
+    st.sidebar.error(
+        f"⚠️ 차단됨 (위험도: {risk_score})"
+    )
+
+elif status == "REVIEW":
+
+    st.sidebar.warning(
+        f"🔎 추가 검토 필요 (위험도: {risk_score})"
+    )
+
+else:
+
+    st.sidebar.success(
+        f"✅ 정상 승인 (위험도: {risk_score})"
+    )
+
+
+
+
   # 화면 새로고침 효과
   st.rerun()
 
@@ -203,6 +326,44 @@ col2.metric(
 col3.metric(label="🚨 보안 경보(Alert)", value=f"{alert_count:,} 건")
 
 st.markdown("---")
+
+# 국가별 거래 건수 
+chart_conn = get_connection()
+
+df_country = pd.read_sql("""
+SELECT
+merchant_country,
+COUNT(*) cnt
+FROM transactions
+GROUP BY merchant_country
+""", chart_conn)
+
+st.subheader("🌎 국가별 거래 현황")
+
+st.bar_chart(
+    df_country.set_index(
+        "merchant_country"
+    )
+)
+
+# 상태별 거래 건수 
+df_status = pd.read_sql("""
+SELECT
+status,
+COUNT(*) cnt
+FROM transactions
+GROUP BY status
+""", chart_conn)
+
+st.subheader("🛡️ 거래 상태 분석")
+
+st.bar_chart(
+    df_status.set_index(
+        "status"
+    )
+)
+
+chart_conn.close()
 
 # 내 카드 맞춤형 조회 필터
 st.subheader("🔍 내 카드 맞춤형 조회 필터")
