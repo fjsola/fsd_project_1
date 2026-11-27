@@ -169,7 +169,7 @@ section[data-testid="stSidebar"] {
 
 section[data-testid="stSidebar"] * {
 
-    color: white;
+    color: black;
 
 }
 
