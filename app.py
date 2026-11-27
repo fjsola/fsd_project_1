@@ -105,15 +105,15 @@ with conn.session as s:
 
 # PyMySQL을 사용하는 기존 방식의 DB 연결 함수 (사이드바 결제 요청 등에서 활용)
 def get_connection():
-  return pymysql.connect(
-      host=st.secrets["mysql"]["host"],
-      port=st.secrets["mysql"]["port"],
-      user=st.secrets["mysql"]["user"],
-      password=st.secrets["mysql"]["password"],
-      database=st.secrets["mysql"]["database"],
-      charset="utf8mb4",
-  )
-
+    return pymysql.connect(
+        host=st.secrets["mysql"]["host"],
+        port=st.secrets["mysql"]["port"],
+        user=st.secrets["mysql"]["user"],
+        password=st.secrets["mysql"]["password"],
+        database=st.secrets["mysql"]["database"],
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
 # 제목 및 스타일 타이틀
 st.title("🚨 스마트 보안 FDS (이상 거래 탐지) 관제 시스템")
@@ -139,6 +139,32 @@ except:
       "4000-1234-5678-0002",
       "4000-1234-5678-0003",
   ]
+# --- [사이드바] 결제 시뮬레이터 입력 폼 ---
+
+st.sidebar.header("💳 실시간 결제 요청 시뮬레이터")
+
+card_id = st.sidebar.selectbox(
+    "사용할 카드 선택",
+    card_list
+)
+
+amount = st.sidebar.number_input(
+    "결제 금액 (원)",
+    min_value=1000,
+    max_value=10000000,
+    value=50000,
+    step=1000
+)
+
+country = st.sidebar.selectbox(
+    "결제 국가",
+    ["KR", "US", "CN", "VN"]
+)
+
+ip_address = st.sidebar.text_input(
+    "접속 IP",
+    "123.142.50.11"
+)
 
 if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
 
@@ -191,17 +217,18 @@ if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
             if country != "KR":
                 risk_score += 20
                 reasons.append("해외결제")
-
-            # 최근 5분 내 반복 결제
+                
+                       # 최근 5분 내 반복 결제
             cursor.execute("""
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS cnt
             FROM transactions
             WHERE card_id=%s
             AND tx_time >= NOW() - INTERVAL 5 MINUTE
             """, (card_id,))
 
-            recent_count = cursor.fetchone()[0]
+            recent_count = cursor.fetchone()["cnt"]
 
+            # 최근 5분내 반복 결제 
             if recent_count >= 3:
                 risk_score += 30
                 reasons.append("5분내 반복결제")
@@ -212,6 +239,11 @@ if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
             if 1 <= hour <= 5:
                 risk_score += 15
                 reasons.append("심야거래")
+
+            # 초고액 결제
+            if amount >= 5000000:
+                risk_score += 30
+                reasons.append("초고액결제")
 
             # 상태 결정
             if risk_score >= 60:
@@ -346,6 +378,22 @@ GROUP BY status
 
 st.subheader("🛡️ 거래 상태 분석")
 
+df_hour = pd.read_sql("""
+SELECT
+HOUR(tx_time) AS hour,
+COUNT(*) AS cnt
+FROM transactions
+GROUP BY HOUR(tx_time)
+ORDER BY hour
+""", chart_conn)
+
+st.subheader("⏰ 시간대별 거래 현황")
+
+st.bar_chart(
+    df_hour.set_index("hour")
+)
+
+
 st.bar_chart(
     df_status.set_index(
         "status"
@@ -397,18 +445,43 @@ except:
 conn_data.close()
 
 # 탭(Tab) 레이아웃 구성
+def highlight_status(row):
+
+    if row["status"] == "BLOCKED":
+        return ["background-color:#ffcccc"] * len(row)
+
+    elif row["status"] == "REVIEW":
+        return ["background-color:#fff3cd"] * len(row)
+
+    return [""] * len(row)
+
 tab1, tab2 = st.tabs(["📊 실시간 보안 경보 로그", "📋 내 카드 거래 내역"])
 
 with tab1:
   st.markdown("### 🚨 최근 보안 경보 현황")
+
   if df_alerts.empty:
     st.info("💡 선택한 카드에 발생한 보안 경보가 없습니다. 안전합니다!")
   else:
-    st.dataframe(df_alerts, use_container_width=True)
+    st.dataframe(
+      df_alerts,
+      width="stretch"
+)
 
 with tab2:
+
   st.markdown("### 💳 최근 거래 내역")
+
   if df_tx.empty:
+
     st.info("💡 해당 카드의 거래 내역이 없습니다.")
+
   else:
-    st.dataframe(df_tx, use_container_width=True)
+
+    st.dataframe(
+      df_tx.style.apply(
+        highlight_status,
+        axis=1
+    ),
+    width="stretch"
+)
