@@ -58,7 +58,7 @@ with conn.session as s:
         );
     """))
 
-    # 4. 거래 내역 테이블 (cards와 1:N 관계)
+    # 4. 거래 내역 테이블 (cards와 1:N 관계) - merchant_category 컬럼 반영 ✨
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS transactions (
             tx_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -86,7 +86,7 @@ with conn.session as s:
         );
     """))
 
-    # 6. 사용자별 맞춤형 탐지 규칙 매핑 테이블 (N:M 관계를 해소하는 교차 테이블 ✨)
+    # 6. 사용자별 맞춤형 탐지 규칙 매핑 테이블
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS user_rules (
             user_id INT,
@@ -98,7 +98,7 @@ with conn.session as s:
         );
     """))
 
-    # 7. 보안 경보 로그 테이블 (transactions와 1:N 관계)
+    # 7. 보안 경보 로그 테이블
     s.execute(text("""
         CREATE TABLE IF NOT EXISTS alert_logs (
             alert_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -147,7 +147,6 @@ with conn.session as s:
         ON DUPLICATE KEY UPDATE rule_name=rule_name;
     """))
 
-    # N:M 교차 테이블 초기 매핑 데이터 삽입
     s.execute(text("""
         INSERT INTO user_rules (user_id, rule_id, custom_threshold) 
         VALUES 
@@ -157,6 +156,7 @@ with conn.session as s:
     """))
 
     s.commit()
+
 def get_connection():
     return pymysql.connect(
         host=db_host,
@@ -203,7 +203,7 @@ if not st.session_state.logged_in:
         st.subheader("👨‍💼 관리자 로그인")
         admin_pw = st.text_input("관리자 비밀번호", type="password", key="admin_pw_input")
         if st.button("관리자로 로그인", use_container_width=True):
-            if admin_pw == "1234":  # 필요시 비밀번호 변경 가능
+            if admin_pw == "1234":
                 st.session_state.logged_in = True
                 st.session_state.role = "admin"
                 st.session_state.user_name = "시스템 관리자"
@@ -253,17 +253,18 @@ else:
 
     sim_card_id = st.sidebar.selectbox("사용할 카드 선택", card_list, key="sim_card")
     amount = st.sidebar.number_input("결제 금액 (원)", min_value=1000, max_value=10000000, value=50000, step=1000)
-    country = st.sidebar.selectbox("결제 국가", ["KR", "US", "CN", "VN"])
+    sim_category = st.sidebar.selectbox("가맹점 업종", ["Electronics", "Travel", "Grocery", "Food", "Clothing"])
     ip_address = st.sidebar.text_input("접속 IP", "123.142.50.11")
 
     if st.sidebar.button("🚀 결제 승인 요청", use_container_width=True):
         conn_exec = get_connection()
         try:
             with conn_exec.cursor() as cursor:
+                # 사이드바 시뮬레이터에도 merchant_category 반영 ✨
                 cursor.execute("""
-                    INSERT INTO transactions (card_id, tx_time, amount, merchant_country, ip_address)
+                    INSERT INTO transactions (card_id, tx_time, amount, merchant_category, ip_address)
                     VALUES (%s, NOW(), %s, %s, %s)
-                """, (sim_card_id, amount, country, ip_address))
+                """, (sim_card_id, amount, sim_category, ip_address))
                 conn_exec.commit()
                 tx_id = cursor.lastrowid
 
@@ -272,9 +273,9 @@ else:
                 if amount > 2000000:
                     risk_score += 40
                     reasons.append("고액결제")
-                if country != "KR":
+                if sim_category == "Travel":
                     risk_score += 20
-                    reasons.append("해외결제")
+                    reasons.append("위험 업종(Travel) 결제")
                 
                 cursor.execute("""
                     SELECT COUNT(*) AS cnt FROM transactions
@@ -345,20 +346,20 @@ else:
 
     st.markdown("---")
 
-    # 관리자일 때만 전체 통계 차트 표시 / 사용자는 본인 내역에 집중
+    # 관리자일 때 전체 통계 차트 (merchant_category 기준 분석으로 변경 ✨)
     if st.session_state.role == "admin":
         chart_conn = get_connection()
-        df_country = pd.read_sql("SELECT merchant_country, COUNT(*) cnt FROM transactions GROUP BY merchant_country", chart_conn)
+        df_category = pd.read_sql("SELECT merchant_category, COUNT(*) cnt FROM transactions GROUP BY merchant_category", chart_conn)
         df_status = pd.read_sql("SELECT status, COUNT(*) cnt FROM transactions GROUP BY status", chart_conn)
         df_hour = pd.read_sql("SELECT HOUR(tx_time) AS hour, COUNT(*) AS cnt FROM transactions GROUP BY HOUR(tx_time) ORDER BY hour", chart_conn)
         chart_conn.close()
 
         col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
-            st.subheader("🌎 국가별 거래 현황")
-            fig_country = px.bar(df_country, x="merchant_country", y="cnt", color="merchant_country", text_auto=True)
-            fig_country.update_layout(showlegend=False, height=350)
-            st.plotly_chart(fig_country, width="stretch")
+            st.subheader("🛍️ 업종별 거래 현황")
+            fig_category = px.bar(df_category, x="merchant_category", y="cnt", color="merchant_category", text_auto=True)
+            fig_category.update_layout(showlegend=False, height=350)
+            st.plotly_chart(fig_category, width="stretch")
 
         with col_chart2:
             st.subheader("🛡️ 거래 상태 분석")
@@ -380,21 +381,20 @@ else:
         df_risk["avg_risk"] = df_risk["avg_risk"].round(1)
         st.dataframe(df_risk.rename(columns={"card_id": "카드번호", "avg_risk": "평균 위험도"}), width="stretch")
 
-    # 데이터 조회 및 필터링 (관리자는 전체 또는 선택, 사용자는 본인 카드만 고정)
+    # 데이터 조회 및 필터링
     if st.session_state.role == "admin":
         st.subheader("🔍 관리자 조회 필터")
         filter_option = st.selectbox("조회할 방식을 선택하세요", ["전체 카드 보기"] + card_list)
         if filter_option == "전체 카드 보기":
-            query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_country, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id ORDER BY a.created_at DESC LIMIT 10"
+            query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_category, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id ORDER BY a.created_at DESC LIMIT 10"
             query_tx = "SELECT * FROM transactions ORDER BY tx_time DESC LIMIT 10"
             params = None
         else:
-            query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_country, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id WHERE t.card_id = %s ORDER BY a.created_at DESC LIMIT 10"
+            query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_category, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id WHERE t.card_id = %s ORDER BY a.created_at DESC LIMIT 10"
             query_tx = "SELECT * FROM transactions WHERE card_id = %s ORDER BY tx_time DESC LIMIT 10"
             params = (filter_option,)
     else:
-        # 일반 사용자는 본인 카드 내역만 자동 조회
-        query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_country, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id WHERE t.card_id = %s ORDER BY a.created_at DESC LIMIT 10"
+        query_alerts = "SELECT a.alert_id, t.card_id, t.amount, t.merchant_category, a.detect_reason, a.created_at FROM alert_logs a JOIN transactions t ON a.tx_id = t.tx_id WHERE t.card_id = %s ORDER BY a.created_at DESC LIMIT 10"
         query_tx = "SELECT * FROM transactions WHERE card_id = %s ORDER BY tx_time DESC LIMIT 10"
         params = (st.session_state.card_id,)
 
