@@ -2,7 +2,7 @@ import pandas as pd
 import pymysql
 import streamlit as st
 import plotly.express as px
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from datetime import datetime
 
 # 페이지 설정
@@ -19,144 +19,198 @@ if "logged_in" not in st.session_state:
 
 # DB 연결 정보 설정
 db_host = st.secrets["mysql"]["host"]
-db_port = st.secrets["mysql"]["port"]
+db_port = int(st.secrets["mysql"]["port"])
 db_user = st.secrets["mysql"]["user"]
 db_password = st.secrets["mysql"]["password"]
 db_name = st.secrets["mysql"]["database"]
 
 DATABASE_URL = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
-conn = st.connection("mysql", type="sql", url=DATABASE_URL)
 
-# 앱 실행 시 테이블 자동 생성 및 더미 데이터 삽입
-with conn.session as s:
-    # 1. 사용자 정보 테이블
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(50) NOT NULL,
-            phone VARCHAR(50) NOT NULL,
-            signup_date DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-    """))
-    
-    # 2. 가맹점 업종 마스터 테이블
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS merchant_categories (
-            category_id INT AUTO_INCREMENT PRIMARY KEY,
-            category_name VARCHAR(50) NOT NULL,
-            risk_weight INT DEFAULT 10
-        );
-    """))
 
-    # 3. 카드 정보 테이블 (users와 1:N 관계)
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS cards (
-            card_id VARCHAR(20) PRIMARY KEY,
-            user_id INT,
-            limit_amount INT DEFAULT 5000000,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        );
-    """))
+# ------------------------------------------------------------------
+# 엔진은 앱 전체에서 한 번만 만들고 재사용합니다 (연결 풀링).
+# 스크립트가 재실행돼도 연결이 새로 생기지 않아 연결 수 초과를 막아줍니다.
+# ------------------------------------------------------------------
+@st.cache_resource
+def get_engine():
+    return create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,   # 죽은 연결 자동 감지/교체
+        pool_recycle=280,     # 오래된 연결 주기적으로 교체
+        pool_size=3,          # 유지할 연결 수
+        max_overflow=2,       # 추가로 허용할 임시 연결 수
+    )
 
-    # 4. 거래 내역 테이블 (cards와 1:N 관계) - merchant_category 컬럼 반영 ✨
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            tx_id INT AUTO_INCREMENT PRIMARY KEY,
-            card_id VARCHAR(20),
-            tx_time DATETIME NOT NULL,
-            amount INT NOT NULL,
-            merchant_category VARCHAR(50) NOT NULL,
-            foreign_transaction INT DEFAULT 0,
-            location_mismatch INT DEFAULT 0,
-            device_trust_score INT DEFAULT 80,
-            velocity_last_24h INT DEFAULT 1,
-            ip_address VARCHAR(50) NOT NULL,
-            status VARCHAR(20) DEFAULT 'NORMAL',
-            FOREIGN KEY (card_id) REFERENCES cards(card_id)
-        );
-    """))
 
-    # 5. FDS 탐지 규칙 정의 테이블
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS fraud_rules (
-            rule_id INT AUTO_INCREMENT PRIMARY KEY,
-            rule_name VARCHAR(100) NOT NULL,
-            threshold_value INT NOT NULL,
-            score_weight INT NOT NULL
-        );
-    """))
+engine = get_engine()
 
-    # 6. 사용자별 맞춤형 탐지 규칙 매핑 테이블
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS user_rules (
-            user_id INT,
-            rule_id INT,
-            custom_threshold INT NOT NULL,
-            PRIMARY KEY (user_id, rule_id),
-            FOREIGN KEY (user_id) REFERENCES users(user_id),
-            FOREIGN KEY (rule_id) REFERENCES fraud_rules(rule_id)
-        );
-    """))
 
-    # 7. 보안 경보 로그 테이블
-    s.execute(text("""
-        CREATE TABLE IF NOT EXISTS alert_logs (
-            alert_id INT AUTO_INCREMENT PRIMARY KEY,
-            tx_id INT,
-            risk_score INT,
-            detect_reason VARCHAR(255),
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (tx_id) REFERENCES transactions(tx_id)
-        );
-    """))
+# ------------------------------------------------------------------
+# 테이블 생성 및 더미 데이터 삽입: 앱 프로세스당 한 번만 실행
+# (기존에는 화면이 재실행될 때마다 14개 쿼리를 매번 실행했습니다)
+# ------------------------------------------------------------------
+@st.cache_resource
+def init_db():
+    with engine.begin() as s:
+        # 1. 사용자 정보 테이블
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(50) NOT NULL,
+                phone VARCHAR(50) NOT NULL,
+                signup_date DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """))
 
-    # --- 초기 기본 마스터 및 더미 데이터 자동 삽입 ---
-    s.execute(text("""
-        INSERT INTO users (user_id, name, phone) 
-        VALUES (1, '홍길동', '010-1234-5678')
-        ON DUPLICATE KEY UPDATE name=name;
-    """))
+        # 2. 가맹점 업종 마스터 테이블
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS merchant_categories (
+                category_id INT AUTO_INCREMENT PRIMARY KEY,
+                category_name VARCHAR(50) NOT NULL,
+                risk_weight INT DEFAULT 10
+            );
+        """))
 
-    s.execute(text("""
-        INSERT INTO merchant_categories (category_id, category_name, risk_weight) 
-        VALUES 
-            (1, 'Electronics', 15),
-            (2, 'Travel', 20),
-            (3, 'Grocery', 5),
-            (4, 'Food', 5),
-            (5, 'Clothing', 10)
-        ON DUPLICATE KEY UPDATE category_name=category_name;
-    """))
+        # 3. 카드 정보 테이블 (users와 1:N 관계)
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS cards (
+                card_id VARCHAR(20) PRIMARY KEY,
+                user_id INT,
+                limit_amount INT DEFAULT 5000000,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+        """))
 
-    s.execute(text("""
-        INSERT INTO cards (card_id, user_id, limit_amount) 
-        VALUES 
-            ('4000-1234-5678-0001', 1, 5000000),
-            ('4000-1234-5678-0002', 1, 5000000),
-            ('4000-1234-5678-0003', 1, 5000000)
-        ON DUPLICATE KEY UPDATE limit_amount=limit_amount;
-    """))
+        # 4. 거래 내역 테이블 (cards와 1:N 관계)
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                tx_id INT AUTO_INCREMENT PRIMARY KEY,
+                card_id VARCHAR(20),
+                tx_time DATETIME NOT NULL,
+                amount INT NOT NULL,
+                merchant_category VARCHAR(50) NOT NULL,
+                foreign_transaction INT DEFAULT 0,
+                location_mismatch INT DEFAULT 0,
+                device_trust_score INT DEFAULT 80,
+                velocity_last_24h INT DEFAULT 1,
+                ip_address VARCHAR(50) NOT NULL,
+                status VARCHAR(20) DEFAULT 'NORMAL',
+                FOREIGN KEY (card_id) REFERENCES cards(card_id)
+            );
+        """))
 
-    s.execute(text("""
-        INSERT INTO fraud_rules (rule_id, rule_name, threshold_value, score_weight) 
-        VALUES 
-            (1, '고액 결제 탐지', 2000000, 40),
-            (2, '초고액 결제 탐지', 5000000, 30),
-            (3, '단시간 반복 결제', 5, 30),
-            (4, '해외 결제 위험', 1, 20)
-        ON DUPLICATE KEY UPDATE rule_name=rule_name;
-    """))
+        # 5. FDS 탐지 규칙 정의 테이블
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS fraud_rules (
+                rule_id INT AUTO_INCREMENT PRIMARY KEY,
+                rule_name VARCHAR(100) NOT NULL,
+                threshold_value INT NOT NULL,
+                score_weight INT NOT NULL
+            );
+        """))
 
-    s.execute(text("""
-        INSERT INTO user_rules (user_id, rule_id, custom_threshold) 
-        VALUES 
-            (1, 1, 2000000),
-            (1, 3, 5)
-        ON DUPLICATE KEY UPDATE custom_threshold=custom_threshold;
-    """))
+        # 6. 사용자별 맞춤형 탐지 규칙 매핑 테이블
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_rules (
+                user_id INT,
+                rule_id INT,
+                custom_threshold INT NOT NULL,
+                PRIMARY KEY (user_id, rule_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (rule_id) REFERENCES fraud_rules(rule_id)
+            );
+        """))
 
-    s.commit()
+        # 7. 보안 경보 로그 테이블
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS alert_logs (
+                alert_id INT AUTO_INCREMENT PRIMARY KEY,
+                tx_id INT,
+                risk_score INT,
+                detect_reason VARCHAR(255),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tx_id) REFERENCES transactions(tx_id)
+            );
+        """))
 
+        # --- 예전 버전으로 이미 만들어진 transactions 테이블에 빠진 컬럼 추가 ---
+        # CREATE TABLE IF NOT EXISTS는 테이블이 이미 있으면 컬럼을 추가해주지 않습니다.
+        required_cols = {
+            "merchant_category": "VARCHAR(50) NOT NULL DEFAULT 'Unknown'",
+            "foreign_transaction": "INT DEFAULT 0",
+            "location_mismatch": "INT DEFAULT 0",
+            "device_trust_score": "INT DEFAULT 80",
+            "velocity_last_24h": "INT DEFAULT 1",
+            "ip_address": "VARCHAR(50) NOT NULL DEFAULT ''",
+            "status": "VARCHAR(20) DEFAULT 'NORMAL'",
+        }
+        existing_cols = {
+            row[0].lower()
+            for row in s.execute(text(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions'"
+            ))
+        }
+        for col, ddl in required_cols.items():
+            if col not in existing_cols:
+                s.execute(text(f"ALTER TABLE transactions ADD COLUMN {col} {ddl}"))
+
+        # --- 초기 기본 마스터 및 더미 데이터 자동 삽입 ---
+        s.execute(text("""
+            INSERT INTO users (user_id, name, phone)
+            VALUES (1, '홍길동', '010-1234-5678')
+            ON DUPLICATE KEY UPDATE name=name;
+        """))
+
+        s.execute(text("""
+            INSERT INTO merchant_categories (category_id, category_name, risk_weight)
+            VALUES
+                (1, 'Electronics', 15),
+                (2, 'Travel', 20),
+                (3, 'Grocery', 5),
+                (4, 'Food', 5),
+                (5, 'Clothing', 10)
+            ON DUPLICATE KEY UPDATE category_name=category_name;
+        """))
+
+        s.execute(text("""
+            INSERT INTO cards (card_id, user_id, limit_amount)
+            VALUES
+                ('4000-1234-5678-0001', 1, 5000000),
+                ('4000-1234-5678-0002', 1, 5000000),
+                ('4000-1234-5678-0003', 1, 5000000)
+            ON DUPLICATE KEY UPDATE limit_amount=limit_amount;
+        """))
+
+        s.execute(text("""
+            INSERT INTO fraud_rules (rule_id, rule_name, threshold_value, score_weight)
+            VALUES
+                (1, '고액 결제 탐지', 2000000, 40),
+                (2, '초고액 결제 탐지', 5000000, 30),
+                (3, '단시간 반복 결제', 5, 30),
+                (4, '해외 결제 위험', 1, 20)
+            ON DUPLICATE KEY UPDATE rule_name=rule_name;
+        """))
+
+        s.execute(text("""
+            INSERT INTO user_rules (user_id, rule_id, custom_threshold)
+            VALUES
+                (1, 1, 2000000),
+                (1, 3, 5)
+            ON DUPLICATE KEY UPDATE custom_threshold=custom_threshold;
+        """))
+    return True
+
+
+try:
+    init_db()
+except Exception as e:
+    st.error(f"DB 초기화 실패: {e.args}")
+    st.stop()
+
+
+# 결제 시뮬레이터(INSERT/UPDATE 여러 번)에서만 쓰는 직접 연결.
+# 반드시 try/finally로 close() 해야 합니다.
 def get_connection():
     return pymysql.connect(
         host=db_host,
@@ -165,8 +219,9 @@ def get_connection():
         password=db_password,
         database=db_name,
         charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor
+        cursorclass=pymysql.cursors.DictCursor,
     )
+
 
 # 스타일 적용
 st.markdown("""
@@ -179,14 +234,15 @@ section[data-testid="stSidebar"] * { color: black; }
 </style>
 """, unsafe_allow_html=True)
 
+DEFAULT_CARDS = ["4000-1234-5678-0001", "4000-1234-5678-0002", "4000-1234-5678-0003"]
+
 # DB에서 카드 목록 불러오기
 try:
-    conn_raw = get_connection()
-    df_cards = pd.read_sql("SELECT card_id FROM cards", conn_raw)
-    conn_raw.close()
-    card_list = df_cards["card_id"].tolist() if not df_cards.empty else ["4000-1234-5678-0001", "4000-1234-5678-0002", "4000-1234-5678-0003"]
-except:
-    card_list = ["4000-1234-5678-0001", "4000-1234-5678-0002", "4000-1234-5678-0003"]
+    df_cards = pd.read_sql("SELECT card_id FROM cards", engine)
+    card_list = df_cards["card_id"].tolist() if not df_cards.empty else DEFAULT_CARDS
+except Exception as e:
+    st.warning(f"카드 목록 조회 실패 (기본값 사용): {e.args}")
+    card_list = DEFAULT_CARDS
 
 
 # ==========================================
@@ -214,17 +270,18 @@ if not st.session_state.logged_in:
     with col2:
         st.subheader("👤 일반 사용자 로그인")
         try:
-            conn = get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT c.card_id, u.name FROM cards c JOIN users u ON c.user_id = u.user_id")
-                card_users = cursor.fetchall()
-            conn.close()
-        except:
+            df_card_users = pd.read_sql(
+                "SELECT c.card_id, u.name FROM cards c JOIN users u ON c.user_id = u.user_id",
+                engine,
+            )
+            card_users = df_card_users.to_dict("records")
+        except Exception as e:
+            st.warning(f"사용자 조회 실패 (기본값 사용): {e.args}")
             card_users = [{"card_id": "4000-1234-5678-0001", "name": "홍길동"}]
 
         card_options = {f"{item['name']} ({item['card_id']})": item['card_id'] for item in card_users}
         selected_card_label = st.selectbox("사용할 카드 선택", list(card_options.keys()))
-        
+
         if st.button("사용자로 로그인", use_container_width=True):
             st.session_state.logged_in = True
             st.session_state.role = "user"
@@ -260,7 +317,6 @@ else:
         conn_exec = get_connection()
         try:
             with conn_exec.cursor() as cursor:
-                # 사이드바 시뮬레이터에도 merchant_category 반영 ✨
                 cursor.execute("""
                     INSERT INTO transactions (card_id, tx_time, amount, merchant_category, ip_address)
                     VALUES (%s, NOW(), %s, %s, %s)
@@ -276,7 +332,7 @@ else:
                 if sim_category == "Travel":
                     risk_score += 20
                     reasons.append("위험 업종(Travel) 결제")
-                
+
                 cursor.execute("""
                     SELECT COUNT(*) AS cnt FROM transactions
                     WHERE card_id=%s AND tx_time >= NOW() - INTERVAL 5 MINUTE
@@ -330,14 +386,13 @@ else:
     st.markdown("---")
 
     # 요약 지표 카드
-    conn_metrics = get_connection()
     try:
-        total_tx_count = pd.read_sql("SELECT COUNT(*) as cnt FROM transactions", conn_metrics)["cnt"].iloc[0]
-        blocked_tx_count = pd.read_sql("SELECT COUNT(*) as cnt FROM transactions WHERE status = 'BLOCKED'", conn_metrics)["cnt"].iloc[0]
-        alert_count = pd.read_sql("SELECT COUNT(*) as cnt FROM alert_logs", conn_metrics)["cnt"].iloc[0]
-    except:
+        total_tx_count = pd.read_sql("SELECT COUNT(*) as cnt FROM transactions", engine)["cnt"].iloc[0]
+        blocked_tx_count = pd.read_sql("SELECT COUNT(*) as cnt FROM transactions WHERE status = 'BLOCKED'", engine)["cnt"].iloc[0]
+        alert_count = pd.read_sql("SELECT COUNT(*) as cnt FROM alert_logs", engine)["cnt"].iloc[0]
+    except Exception as e:
+        st.warning(f"지표 조회 실패: {e.args}")
         total_tx_count, blocked_tx_count, alert_count = 0, 0, 0
-    conn_metrics.close()
 
     col1, col2, col3 = st.columns(3)
     col1.metric(label="📦 전체 누적 거래 건수", value=f"{total_tx_count:,} 건")
@@ -346,13 +401,20 @@ else:
 
     st.markdown("---")
 
-    # 관리자일 때 전체 통계 차트 (merchant_category 기준 분석으로 변경 ✨)
+    # 관리자일 때 전체 통계 차트
     if st.session_state.role == "admin":
-        chart_conn = get_connection()
-        df_category = pd.read_sql("SELECT merchant_category, COUNT(*) cnt FROM transactions GROUP BY merchant_category", chart_conn)
-        df_status = pd.read_sql("SELECT status, COUNT(*) cnt FROM transactions GROUP BY status", chart_conn)
-        df_hour = pd.read_sql("SELECT HOUR(tx_time) AS hour, COUNT(*) AS cnt FROM transactions GROUP BY HOUR(tx_time) ORDER BY hour", chart_conn)
-        chart_conn.close()
+        try:
+            df_category = pd.read_sql("SELECT merchant_category, COUNT(*) cnt FROM transactions GROUP BY merchant_category", engine)
+            df_status = pd.read_sql("SELECT status, COUNT(*) cnt FROM transactions GROUP BY status", engine)
+            df_hour = pd.read_sql("SELECT HOUR(tx_time) AS hour, COUNT(*) AS cnt FROM transactions GROUP BY HOUR(tx_time) ORDER BY hour", engine)
+            df_risk = pd.read_sql("""
+                SELECT t.card_id, AVG(a.risk_score) AS avg_risk
+                FROM transactions t JOIN alert_logs a ON t.tx_id = a.tx_id
+                GROUP BY t.card_id ORDER BY avg_risk DESC
+            """, engine)
+        except Exception as e:
+            st.error(f"차트 데이터 조회 실패: {e.args}")
+            st.stop()
 
         col_chart1, col_chart2 = st.columns(2)
         with col_chart1:
@@ -373,12 +435,7 @@ else:
         st.plotly_chart(fig_hour, width="stretch")
 
         st.subheader("🚨 카드별 평균 위험도")
-        df_risk = pd.read_sql("""
-            SELECT t.card_id, AVG(a.risk_score) AS avg_risk
-            FROM transactions t JOIN alert_logs a ON t.tx_id = a.tx_id
-            GROUP BY t.card_id ORDER BY avg_risk DESC
-        """, get_connection())
-        df_risk["avg_risk"] = df_risk["avg_risk"].round(1)
+        df_risk["avg_risk"] = df_risk["avg_risk"].astype(float).round(1)
         st.dataframe(df_risk.rename(columns={"card_id": "카드번호", "avg_risk": "평균 위험도"}), width="stretch")
 
     # 데이터 조회 및 필터링
@@ -398,14 +455,13 @@ else:
         query_tx = "SELECT * FROM transactions WHERE card_id = %s ORDER BY tx_time DESC LIMIT 10"
         params = (st.session_state.card_id,)
 
-    conn_data = get_connection()
     try:
-        df_alerts = pd.read_sql(query_alerts, conn_data, params=params if params else None)
-        df_tx = pd.read_sql(query_tx, conn_data, params=params if params else None)
-    except:
+        df_alerts = pd.read_sql(query_alerts, engine, params=params)
+        df_tx = pd.read_sql(query_tx, engine, params=params)
+    except Exception as e:
+        st.warning(f"데이터 조회 실패: {e.args}")
         df_alerts = pd.DataFrame()
         df_tx = pd.DataFrame()
-    conn_data.close()
 
     def highlight_status(row):
         if row["status"] == "BLOCKED":
@@ -427,5 +483,6 @@ else:
         st.markdown("### 💳 거래 내역")
         if df_tx.empty:
             st.info("💡 거래 내역이 없습니다.")
+
         else:
             st.dataframe(df_tx.style.apply(highlight_status, axis=1), width="stretch")
